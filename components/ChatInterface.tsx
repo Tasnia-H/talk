@@ -156,7 +156,7 @@ export default function ChatInterface() {
     if (!token) return;
 
     console.log("Initializing socket connection");
-    const socketInstance = io("https://tbk.solar-ict.com", {
+    const socketInstance = io("http://localhost:3001", {
       auth: { token },
       forceNew: false,
       reconnection: true,
@@ -358,7 +358,7 @@ export default function ChatInterface() {
 
   const fetchUsers = async () => {
     try {
-      const response = await fetch("https://tbk.solar-ict.com/users", {
+      const response = await fetch("http://localhost:3001/users", {
         headers: {
           Authorization: `Bearer ${token}`,
         },
@@ -573,6 +573,13 @@ export default function ChatInterface() {
     [toggleVideo]
   );
 
+  const handleInputFocus = useCallback(() => {
+    if (selectedUser && socket) {
+      // Mark messages as read when user focuses on input
+      socket.emit("set_active_chat", { receiverId: selectedUser.id });
+    }
+  }, [selectedUser, socket]);
+
   return (
     <div className="flex h-screen bg-gray-100 relative overflow-hidden">
       {/* Call Modal */}
@@ -713,7 +720,27 @@ export default function ChatInterface() {
             ))
           ) : (
             <div className="p-4 text-center text-gray-500">
-              <p>Loading users...</p>
+              <div className="flex flex-col items-center justify-center">
+                {/* Company Logo */}
+                <div className="mb-4">
+                  <img
+                    src="/favicon.io"
+                    alt="Solar ICT"
+                    className="h-12 w-auto opacity-60"
+                    onError={(e) => {
+                      // Fallback to text if logo doesn't exist
+                      e.currentTarget.style.display = "none";
+                      const fallback = e.currentTarget.nextElementSibling;
+                      if (fallback)
+                        (fallback as HTMLElement).style.display = "block";
+                    }}
+                  />
+                  <div className="text-lg font-semibold text-gray-400 hidden">
+                    Solar ICT
+                  </div>
+                </div>
+                <p>Loading users...</p>
+              </div>
             </div>
           )}
         </div>
@@ -842,6 +869,7 @@ export default function ChatInterface() {
                     type="text"
                     value={newMessage}
                     onChange={(e) => setNewMessage(e.target.value)}
+                    onFocus={handleInputFocus}
                     placeholder="Type a message..."
                     className="flex-1 border border-gray-300 rounded-full px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                   />
