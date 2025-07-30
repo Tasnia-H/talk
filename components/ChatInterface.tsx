@@ -573,12 +573,17 @@ export default function ChatInterface() {
     [toggleVideo]
   );
 
-  const handleInputFocus = useCallback(() => {
-    if (selectedUser && socket) {
-      // Mark messages as read when user focuses on input
-      socket.emit("set_active_chat", { receiverId: selectedUser.id });
+  // Function to mark messages as read
+  const markMessagesAsRead = useCallback(() => {
+    if (selectedUser && socket && unreadCounts[selectedUser.id] > 0) {
+      socket.emit("mark_messages_read", { senderId: selectedUser.id });
     }
-  }, [selectedUser, socket]);
+  }, [selectedUser, socket, unreadCounts]);
+
+  // Handle text input focus to mark messages as read
+  const handleInputFocus = useCallback(() => {
+    markMessagesAsRead();
+  }, [markMessagesAsRead]);
 
   return (
     <div className="flex h-screen bg-gray-100 relative overflow-hidden">
@@ -720,27 +725,7 @@ export default function ChatInterface() {
             ))
           ) : (
             <div className="p-4 text-center text-gray-500">
-              <div className="flex flex-col items-center justify-center">
-                {/* Company Logo */}
-                <div className="mb-4">
-                  <img
-                    src="/favicon.io"
-                    alt="Solar ICT"
-                    className="h-12 w-auto opacity-60"
-                    onError={(e) => {
-                      // Fallback to text if logo doesn't exist
-                      e.currentTarget.style.display = "none";
-                      const fallback = e.currentTarget.nextElementSibling;
-                      if (fallback)
-                        (fallback as HTMLElement).style.display = "block";
-                    }}
-                  />
-                  <div className="text-lg font-semibold text-gray-400 hidden">
-                    Solar ICT
-                  </div>
-                </div>
-                <p>Loading users...</p>
-              </div>
+              <p>Loading users...</p>
             </div>
           )}
         </div>
