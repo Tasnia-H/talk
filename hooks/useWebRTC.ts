@@ -20,17 +20,44 @@ export function useWebRTC({ socket, callId, isInitiator }: UseWebRTCProps) {
   const currentCallIdRef = useRef<string | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
 
-  // STUN and TURN servers configuration
+  // Enhanced STUN/TURN servers configuration for cross-network calls
   const pcConfig = {
     iceServers: [
+      // Google STUN servers
       { urls: "stun:stun.l.google.com:19302" },
-
+      { urls: "stun:stun1.l.google.com:19302" },
+      { urls: "stun:stun2.l.google.com:19302" },
+      { urls: "stun:stun3.l.google.com:19302" },
+      { urls: "stun:stun4.l.google.com:19302" },
+      
+      // Additional STUN servers for better connectivity
+      { urls: "stun:stun.stunprotocol.org:3478" },
+      { urls: "stun:stun.voiparound.com" },
+      { urls: "stun:stun.voipbuster.com" },
+      
+      // Free TURN servers (public but limited)
       {
-        urls: "turn:openrelay.metered.ca:80",
-        username: "openrelayproject",
-        credential: "openrelayproject",
+        urls: "turn:a.relay.metered.ca:80",
+        username: "9f62bc2fcfe0b9c15c35b2a7",
+        credential: "vbKqHSCc91Y8gq5o",
+      },
+      {
+        urls: "turn:a.relay.metered.ca:80?transport=tcp",
+        username: "9f62bc2fcfe0b9c15c35b2a7", 
+        credential: "vbKqHSCc91Y8gq5o",
+      },
+      {
+        urls: "turn:a.relay.metered.ca:443",
+        username: "9f62bc2fcfe0b9c15c35b2a7",
+        credential: "vbKqHSCc91Y8gq5o",
+      },
+      {
+        urls: "turn:a.relay.metered.ca:443?transport=tcp",
+        username: "9f62bc2fcfe0b9c15c35b2a7",
+        credential: "vbKqHSCc91Y8gq5o",
       },
     ],
+    iceCandidatePoolSize: 10,
   };
 
   // Initialize peer connection
@@ -164,7 +191,7 @@ export function useWebRTC({ socket, callId, isInitiator }: UseWebRTCProps) {
     });
   }, []);
 
-  // Create and send offer
+  // Create and send offer with better error handling
   const createOffer = useCallback(async () => {
     if (!peerConnection.current || !socket || !currentCallIdRef.current) {
       console.error("Cannot create offer - missing dependencies", {
@@ -177,24 +204,30 @@ export function useWebRTC({ socket, callId, isInitiator }: UseWebRTCProps) {
 
     try {
       console.log("Creating offer for call:", currentCallIdRef.current);
+      
+      // Create offer with enhanced options for better cross-network compatibility
       const offer = await peerConnection.current.createOffer({
         offerToReceiveAudio: true,
         offerToReceiveVideo: true,
+        iceRestart: false,
       });
       
+      console.log("Offer created, setting local description");
       await peerConnection.current.setLocalDescription(offer);
-      console.log("Local description set, sending offer");
+      console.log("Local description set successfully, sending offer");
 
       socket.emit("webrtc_offer", {
         callId: currentCallIdRef.current,
         offer,
       });
+      
+      console.log("✅ Offer sent successfully");
     } catch (error) {
-      console.error("Error creating offer:", error);
+      console.error("❌ Error creating offer:", error);
     }
   }, [socket]);
 
-  // Handle incoming offer
+  // Handle incoming offer with better state management
   const handleOffer = useCallback(async (offer: RTCSessionDescriptionInit) => {
     if (!peerConnection.current || !socket || !currentCallIdRef.current) {
       console.error("Peer connection not initialized for handling offer");
@@ -203,8 +236,18 @@ export function useWebRTC({ socket, callId, isInitiator }: UseWebRTCProps) {
 
     try {
       console.log("Handling incoming offer");
+      
+      // Check current signaling state
+      const currentState = peerConnection.current.signalingState;
+      console.log("Current signaling state:", currentState);
+      
+      if (currentState !== "stable" && currentState !== "have-local-offer") {
+        console.log("Invalid state for setting remote description:", currentState);
+        return;
+      }
+      
       await peerConnection.current.setRemoteDescription(new RTCSessionDescription(offer));
-      console.log("Remote description set");
+      console.log("✅ Remote description set successfully");
 
       // Process queued ICE candidates
       console.log("Processing queued ICE candidates:", iceCandidateQueue.current.length);
@@ -213,9 +256,9 @@ export function useWebRTC({ socket, callId, isInitiator }: UseWebRTCProps) {
         if (candidate) {
           try {
             await peerConnection.current.addIceCandidate(candidate);
-            console.log("Added queued ICE candidate");
+            console.log("✅ Added queued ICE candidate");
           } catch (err) {
-            console.error("Error adding queued ICE candidate:", err);
+            console.error("❌ Error adding queued ICE candidate:", err);
           }
         }
       }
@@ -223,18 +266,20 @@ export function useWebRTC({ socket, callId, isInitiator }: UseWebRTCProps) {
       console.log("Creating answer");
       const answer = await peerConnection.current.createAnswer();
       await peerConnection.current.setLocalDescription(answer);
+      console.log("✅ Local description set for answer");
 
       console.log("Sending answer via socket");
       socket.emit("webrtc_answer", {
         callId: currentCallIdRef.current,
         answer,
       });
+      console.log("✅ Answer sent successfully");
     } catch (error) {
-      console.error("Error handling offer:", error);
+      console.error("❌ Error handling offer:", error);
     }
   }, [socket]);
 
-  // Handle incoming answer
+  // Handle incoming answer with better state management
   const handleAnswer = useCallback(async (answer: RTCSessionDescriptionInit) => {
     if (!peerConnection.current) {
       console.error("Peer connection not initialized for handling answer");
@@ -243,8 +288,19 @@ export function useWebRTC({ socket, callId, isInitiator }: UseWebRTCProps) {
 
     try {
       console.log("Handling incoming answer");
+      
+      // Check current signaling state
+      const currentState = peerConnection.current.signalingState;
+      console.log("Current signaling state:", currentState);
+      
+      if (currentState !== "have-local-offer") {
+        console.error("Invalid state for setting remote answer:", currentState);
+        console.log("Expected 'have-local-offer', got:", currentState);
+        return;
+      }
+      
       await peerConnection.current.setRemoteDescription(new RTCSessionDescription(answer));
-      console.log("Remote description set for answer");
+      console.log("✅ Remote description set for answer");
 
       // Process queued ICE candidates
       console.log("Processing queued ICE candidates:", iceCandidateQueue.current.length);
@@ -253,18 +309,19 @@ export function useWebRTC({ socket, callId, isInitiator }: UseWebRTCProps) {
         if (candidate) {
           try {
             await peerConnection.current.addIceCandidate(candidate);
-            console.log("Added queued ICE candidate");
+            console.log("✅ Added queued ICE candidate");
           } catch (err) {
-            console.error("Error adding queued ICE candidate:", err);
+            console.error("❌ Error adding queued ICE candidate:", err);
           }
         }
       }
+      console.log("✅ Answer handling completed successfully");
     } catch (error) {
-      console.error("Error handling answer:", error);
+      console.error("❌ Error handling answer:", error);
     }
   }, []);
 
-  // Handle incoming ICE candidate
+  // Handle incoming ICE candidate with better error handling
   const handleIceCandidate = useCallback(async (candidate: RTCIceCandidateInit) => {
     if (!peerConnection.current) {
       console.error("Peer connection not initialized for handling ICE candidate");
@@ -274,16 +331,18 @@ export function useWebRTC({ socket, callId, isInitiator }: UseWebRTCProps) {
     try {
       const iceCandidate = new RTCIceCandidate(candidate);
       
-      if (peerConnection.current.remoteDescription) {
-        console.log("Adding ICE candidate immediately");
+      if (peerConnection.current.remoteDescription && peerConnection.current.remoteDescription.type) {
+        console.log("Adding ICE candidate immediately:", candidate);
         await peerConnection.current.addIceCandidate(iceCandidate);
+        console.log("✅ ICE candidate added successfully");
       } else {
         // Queue the candidate if remote description is not set yet
         console.log("Queueing ICE candidate - no remote description yet");
         iceCandidateQueue.current.push(iceCandidate);
       }
     } catch (error) {
-      console.error("Error handling ICE candidate:", error);
+      console.error("❌ Error handling ICE candidate:", error);
+      // Don't throw error, ICE candidate failures are common and recoverable
     }
   }, []);
 
