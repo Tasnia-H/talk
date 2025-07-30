@@ -20,10 +20,16 @@ export function useWebRTC({ socket, callId, isInitiator }: UseWebRTCProps) {
   const currentCallIdRef = useRef<string | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
 
-  // STUN servers configuration
+  // STUN and TURN servers configuration
   const pcConfig = {
     iceServers: [
       { urls: "stun:stun.l.google.com:19302" },
+
+      {
+        urls: "turn:openrelay.metered.ca:80",
+        username: "openrelayproject",
+        credential: "openrelayproject",
+      },
     ],
   };
 
