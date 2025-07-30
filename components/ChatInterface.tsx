@@ -66,6 +66,72 @@ export default function ChatInterface() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const socketRef = useRef<SocketType | null>(null);
 
+  // Audio refs for ringtones
+  const dialTone = useRef<HTMLAudioElement | null>(null);
+  const ringTone = useRef<HTMLAudioElement | null>(null);
+
+  // Initialize audio on component mount
+  useEffect(() => {
+    dialTone.current = new Audio("/sounds/dial.mp3");
+    ringTone.current = new Audio("/sounds/ring.mp3");
+
+    // Configure audio settings
+    if (dialTone.current) {
+      dialTone.current.loop = true;
+      dialTone.current.volume = 0.5;
+    }
+    if (ringTone.current) {
+      ringTone.current.loop = true;
+      ringTone.current.volume = 0.7;
+    }
+
+    // Cleanup audio on unmount
+    return () => {
+      if (dialTone.current) {
+        dialTone.current.pause();
+        dialTone.current = null;
+      }
+      if (ringTone.current) {
+        ringTone.current.pause();
+        ringTone.current = null;
+      }
+    };
+  }, []);
+
+  // Function to stop all ringtones
+  const stopAllRingtones = useCallback(() => {
+    if (dialTone.current) {
+      dialTone.current.pause();
+      dialTone.current.currentTime = 0;
+    }
+    if (ringTone.current) {
+      ringTone.current.pause();
+      ringTone.current.currentTime = 0;
+    }
+  }, []);
+
+  // Function to play dial tone
+  const playDialTone = useCallback(() => {
+    stopAllRingtones();
+    if (dialTone.current) {
+      dialTone.current.currentTime = 0;
+      dialTone.current.play().catch((err) => {
+        console.log("Could not play dial tone:", err);
+      });
+    }
+  }, [stopAllRingtones]);
+
+  // Function to play ring tone
+  const playRingTone = useCallback(() => {
+    stopAllRingtones();
+    if (ringTone.current) {
+      ringTone.current.currentTime = 0;
+      ringTone.current.play().catch((err) => {
+        console.log("Could not play ring tone:", err);
+      });
+    }
+  }, [stopAllRingtones]);
+
   // WebRTC hook
   const {
     localStream,
@@ -90,7 +156,7 @@ export default function ChatInterface() {
     if (!token) return;
 
     console.log("Initializing socket connection");
-    const socketInstance = io("https://tbk.solar-ict.com/", {
+    const socketInstance = io("https://tbk.solar-ict.com", {
       auth: { token },
       forceNew: false,
       reconnection: true,
@@ -139,6 +205,9 @@ export default function ChatInterface() {
       console.log("Incoming call received:", data);
       setIncomingCall(data);
 
+      // Play ring tone for incoming call
+      playRingTone();
+
       if (!isPageVisible) {
         showNotification(
           `Incoming ${data.type} call`,
@@ -160,6 +229,10 @@ export default function ChatInterface() {
 
     socketInstance.on("call_accepted", (data: { callId: string }) => {
       console.log("Call accepted:", data.callId);
+
+      // Stop dial tone when call is accepted
+      stopAllRingtones();
+
       setCurrentCall((prev) => {
         if (prev && prev.callId === data.callId) {
           return { ...prev, status: "connected" };
@@ -170,6 +243,10 @@ export default function ChatInterface() {
 
     socketInstance.on("call_rejected", (data: { callId: string }) => {
       console.log("Call rejected:", data.callId);
+
+      // Stop all ringtones when call is rejected
+      stopAllRingtones();
+
       setCurrentCall((prev) => {
         if (prev && prev.callId === data.callId) {
           setTimeout(() => cleanupWebRTC(), 100);
@@ -181,6 +258,10 @@ export default function ChatInterface() {
 
     socketInstance.on("call_ended", (data: { callId: string }) => {
       console.log("Call ended:", data.callId);
+
+      // Stop all ringtones when call ends
+      stopAllRingtones();
+
       setCurrentCall((prev) => {
         if (prev && prev.callId === data.callId) {
           setTimeout(() => cleanupWebRTC(), 100);
@@ -193,6 +274,10 @@ export default function ChatInterface() {
 
     socketInstance.on("call_failed", (data: { reason: string }) => {
       console.log("Call failed:", data.reason);
+
+      // Stop all ringtones when call fails
+      stopAllRingtones();
+
       alert(`Call failed: ${data.reason}`);
       setCurrentCall(null);
       cleanupWebRTC();
@@ -209,10 +294,18 @@ export default function ChatInterface() {
 
     return () => {
       console.log("Cleaning up socket connection");
+      stopAllRingtones();
       socketInstance.disconnect();
       socketRef.current = null;
     };
-  }, [token, isPageVisible, showNotification, cleanupWebRTC]);
+  }, [
+    token,
+    isPageVisible,
+    showNotification,
+    cleanupWebRTC,
+    playRingTone,
+    stopAllRingtones,
+  ]);
 
   // Fetch users on mount
   useEffect(() => {
@@ -351,6 +444,9 @@ export default function ChatInterface() {
           isInitiator: true,
         });
 
+        // Play dial tone for outgoing call
+        playDialTone();
+
         // Initiate call through socket
         socket.emit("initiate_call", {
           receiverId: selectedUser.id,
@@ -359,6 +455,7 @@ export default function ChatInterface() {
       } catch (error) {
         console.error("Failed to initiate call:", error);
         alert("Failed to access camera/microphone");
+        stopAllRingtones();
         setCurrentCall(null);
         cleanupWebRTC();
       }
@@ -369,6 +466,8 @@ export default function ChatInterface() {
       getUserMedia,
       initializePeerConnection,
       addLocalStream,
+      playDialTone,
+      stopAllRingtones,
       cleanupWebRTC,
     ]
   );
@@ -381,6 +480,9 @@ export default function ChatInterface() {
 
     try {
       console.log("Accepting call:", incomingCall.callId);
+
+      // Stop ring tone when accepting call
+      stopAllRingtones();
 
       // Initialize peer connection first
       initializePeerConnection();
@@ -417,6 +519,7 @@ export default function ChatInterface() {
     getUserMedia,
     initializePeerConnection,
     addLocalStream,
+    stopAllRingtones,
   ]);
 
   const rejectCall = useCallback(() => {
@@ -426,12 +529,16 @@ export default function ChatInterface() {
     }
 
     console.log("Rejecting call:", incomingCall.callId);
+
+    // Stop ring tone when rejecting call
+    stopAllRingtones();
+
     socket.emit("reject_call", {
       callId: incomingCall.callId,
     });
 
     setIncomingCall(null);
-  }, [incomingCall, socket]);
+  }, [incomingCall, socket, stopAllRingtones]);
 
   const endCall = useCallback(() => {
     if (!currentCall || !socket) {
@@ -440,13 +547,17 @@ export default function ChatInterface() {
     }
 
     console.log("Ending call:", currentCall.callId);
+
+    // Stop all ringtones when ending call
+    stopAllRingtones();
+
     socket.emit("end_call", {
       callId: currentCall.callId,
     });
 
     setCurrentCall(null);
     cleanupWebRTC();
-  }, [currentCall, socket, cleanupWebRTC]);
+  }, [currentCall, socket, stopAllRingtones, cleanupWebRTC]);
 
   const handleToggleMute = useCallback(
     (isMuted: boolean) => {
