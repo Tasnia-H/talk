@@ -4,8 +4,12 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { useAuth } from "../contexts/AuthContext";
 import { useNotification } from "../contexts/NotificationContext";
 import { useWebRTC } from "../hooks/useWebRTC";
+import { useWebRTCFileTransfer } from "../hooks/useWebRTCFileTransfer";
 import CallModal from "./CallModal";
-import { Phone, Video } from "lucide-react";
+import Sidebar from "./Sidebar";
+import ChatHeader from "./ChatHeader";
+import MessageList from "./MessageList";
+import MessageInput from "./MessageInput";
 import io from "socket.io-client";
 type SocketType = ReturnType<typeof io>;
 
@@ -24,6 +28,11 @@ interface Message {
   sender: User;
   receiver: User;
   isNewMessage?: boolean;
+  type?: string;
+  fileName?: string;
+  fileSize?: number;
+  fileType?: string;
+  isReceiverOnline?: boolean;
 }
 
 interface IncomingCall {
@@ -40,6 +49,15 @@ interface CallState {
   isInitiator: boolean;
 }
 
+interface FileTransferInfo {
+  messageId: string;
+  file?: File;
+  progress?: {
+    percentage: number;
+    status: "pending" | "transferring" | "completed" | "failed";
+  };
+}
+
 export default function ChatInterface() {
   const { user, token, logout } = useAuth();
   const {
@@ -50,6 +68,7 @@ export default function ChatInterface() {
     isPageVisible,
   } = useNotification();
 
+  // State management
   const [users, setUsers] = useState<User[]>([]);
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -59,23 +78,100 @@ export default function ChatInterface() {
   const [showNotificationPrompt, setShowNotificationPrompt] = useState(false);
   const [showSidebar, setShowSidebar] = useState(false);
 
+  // File sharing states
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [fileTransfers, setFileTransfers] = useState<
+    Map<string, FileTransferInfo>
+  >(new Map());
+  const [isUserOnline, setIsUserOnline] = useState<boolean>(false);
+
   // Call states
   const [currentCall, setCurrentCall] = useState<CallState | null>(null);
   const [incomingCall, setIncomingCall] = useState<IncomingCall | null>(null);
 
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  // Refs
   const socketRef = useRef<SocketType | null>(null);
-
-  // Audio refs for ringtones
   const dialTone = useRef<HTMLAudioElement | null>(null);
   const ringTone = useRef<HTMLAudioElement | null>(null);
+  const selectedFileRef = useRef<File | null>(null);
+  const selectedUserRef = useRef<User | null>(null);
+  const sendFileRef = useRef<((file: File, metadata: any) => void) | null>(
+    null
+  );
+
+  // Keep refs in sync
+  useEffect(() => {
+    selectedFileRef.current = selectedFile;
+  }, [selectedFile]);
+
+  useEffect(() => {
+    selectedUserRef.current = selectedUser;
+  }, [selectedUser]);
+
+  // Utility function for file size formatting
+  const formatFileSize = (bytes: number) => {
+    if (bytes === 0) return "0 Bytes";
+    const k = 1024;
+    const sizes = ["Bytes", "KB", "MB"];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + " " + sizes[i];
+  };
+
+  // WebRTC File Transfer Hook
+  const {
+    isChannelReady,
+    sendFile,
+    transferProgress,
+    cleanup: cleanupFileTransfer,
+  } = useWebRTCFileTransfer({
+    socket: socketRef.current,
+    currentUserId: user?.id || "",
+    otherUserId: selectedUser?.id || null,
+    onFileReceived: (file, metadata) => {
+      console.log("File received:", file.name);
+      const messageId = metadata.messageId;
+      if (messageId) {
+        setFileTransfers((prev) => {
+          const newMap = new Map(prev);
+          newMap.set(messageId, {
+            messageId,
+            file,
+            progress: {
+              percentage: 100,
+              status: "completed",
+            },
+          });
+          return newMap;
+        });
+      }
+    },
+    onTransferProgress: (progress) => {
+      const messageId = progress.fileId;
+      setFileTransfers((prev) => {
+        const newMap = new Map(prev);
+        const existing = newMap.get(messageId) || { messageId };
+        newMap.set(messageId, {
+          ...existing,
+          progress: {
+            percentage: progress.percentage,
+            status: progress.status,
+          },
+        });
+        return newMap;
+      });
+    },
+  });
+
+  // Keep sendFile ref updated
+  useEffect(() => {
+    sendFileRef.current = sendFile;
+  }, [sendFile]);
 
   // Initialize audio on component mount
   useEffect(() => {
     dialTone.current = new Audio("/sounds/dial.mp3");
     ringTone.current = new Audio("/sounds/ring.mp3");
 
-    // Configure audio settings
     if (dialTone.current) {
       dialTone.current.loop = true;
       dialTone.current.volume = 0.5;
@@ -85,7 +181,6 @@ export default function ChatInterface() {
       ringTone.current.volume = 0.7;
     }
 
-    // Cleanup audio on unmount
     return () => {
       if (dialTone.current) {
         dialTone.current.pause();
@@ -98,7 +193,7 @@ export default function ChatInterface() {
     };
   }, []);
 
-  // Function to stop all ringtones
+  // Audio control functions
   const stopAllRingtones = useCallback(() => {
     if (dialTone.current) {
       dialTone.current.pause();
@@ -110,7 +205,6 @@ export default function ChatInterface() {
     }
   }, []);
 
-  // Function to play dial tone
   const playDialTone = useCallback(() => {
     stopAllRingtones();
     if (dialTone.current) {
@@ -121,7 +215,6 @@ export default function ChatInterface() {
     }
   }, [stopAllRingtones]);
 
-  // Function to play ring tone
   const playRingTone = useCallback(() => {
     stopAllRingtones();
     if (ringTone.current) {
@@ -132,7 +225,7 @@ export default function ChatInterface() {
     }
   }, [stopAllRingtones]);
 
-  // WebRTC hook
+  // WebRTC hook for calls
   const {
     localStream,
     remoteStream,
@@ -146,142 +239,25 @@ export default function ChatInterface() {
     forceReleaseVideo,
     cleanup: cleanupWebRTC,
   } = useWebRTC({
-    socket,
+    socket: socketRef.current,
     callId: currentCall?.callId || null,
     isInitiator: currentCall?.isInitiator || false,
   });
 
-  // Initialize socket connection
+  // Initialize socket connection - ONLY ONCE
   useEffect(() => {
-    if (!token) return;
+    if (!token || socketRef.current) return;
 
     console.log("Initializing socket connection");
     const socketInstance = io("https://tbk.solar-ict.com", {
       auth: { token },
-      forceNew: false,
       reconnection: true,
       reconnectionAttempts: 5,
       reconnectionDelay: 1000,
     });
 
-    setSocket(socketInstance);
     socketRef.current = socketInstance;
-
-    // Handle incoming messages
-    socketInstance.on("receive_message", (message: Message) => {
-      setMessages((prev) => [...prev, message]);
-
-      if (message.isNewMessage && !isPageVisible) {
-        showNotification(
-          `New message from ${message.sender.username}`,
-          message.content,
-          "/favicon.ico"
-        );
-      }
-    });
-
-    socketInstance.on("message_sent", (message: Message) => {
-      setMessages((prev) => [...prev, message]);
-    });
-
-    socketInstance.on("messages_history", (history: Message[]) => {
-      setMessages(history);
-    });
-
-    socketInstance.on("unread_counts", (counts: Record<string, number>) => {
-      setUnreadCounts(counts);
-    });
-
-    socketInstance.on("messages_marked_read", (data: { senderId: string }) => {
-      setMessages((prev) =>
-        prev.map((msg) =>
-          msg.sender.id === data.senderId ? { ...msg, isRead: true } : msg
-        )
-      );
-    });
-
-    // Call event handlers
-    socketInstance.on("incoming_call", (data: IncomingCall) => {
-      console.log("Incoming call received:", data);
-      setIncomingCall(data);
-
-      // Play ring tone for incoming call
-      playRingTone();
-
-      if (!isPageVisible) {
-        showNotification(
-          `Incoming ${data.type} call`,
-          `${data.caller.username} is calling you`,
-          "/favicon.ico"
-        );
-      }
-    });
-
-    socketInstance.on("call_initiated", (data: { callId: string }) => {
-      console.log("Call initiated with ID:", data.callId);
-      setCurrentCall((prev) => {
-        if (prev && !prev.callId) {
-          return { ...prev, callId: data.callId };
-        }
-        return prev;
-      });
-    });
-
-    socketInstance.on("call_accepted", (data: { callId: string }) => {
-      console.log("Call accepted:", data.callId);
-
-      // Stop dial tone when call is accepted
-      stopAllRingtones();
-
-      setCurrentCall((prev) => {
-        if (prev && prev.callId === data.callId) {
-          return { ...prev, status: "connected" };
-        }
-        return prev;
-      });
-    });
-
-    socketInstance.on("call_rejected", (data: { callId: string }) => {
-      console.log("Call rejected:", data.callId);
-
-      // Stop all ringtones when call is rejected
-      stopAllRingtones();
-
-      setCurrentCall((prev) => {
-        if (prev && prev.callId === data.callId) {
-          setTimeout(() => cleanupWebRTC(), 100);
-          return null;
-        }
-        return prev;
-      });
-    });
-
-    socketInstance.on("call_ended", (data: { callId: string }) => {
-      console.log("Call ended:", data.callId);
-
-      // Stop all ringtones when call ends
-      stopAllRingtones();
-
-      setCurrentCall((prev) => {
-        if (prev && prev.callId === data.callId) {
-          setTimeout(() => cleanupWebRTC(), 100);
-          return null;
-        }
-        return prev;
-      });
-      setIncomingCall(null);
-    });
-
-    socketInstance.on("call_failed", (data: { reason: string }) => {
-      console.log("Call failed:", data.reason);
-
-      // Stop all ringtones when call fails
-      stopAllRingtones();
-
-      alert(`Call failed: ${data.reason}`);
-      setCurrentCall(null);
-      cleanupWebRTC();
-    });
+    setSocket(socketInstance);
 
     // Connection event handlers
     socketInstance.on("connect", () => {
@@ -294,28 +270,240 @@ export default function ChatInterface() {
 
     return () => {
       console.log("Cleaning up socket connection");
+      if (socketRef.current) {
+        socketRef.current.disconnect();
+        socketRef.current = null;
+        setSocket(null);
+      }
+    };
+  }, [token]); // Only depend on token
+
+  // Setup socket event listeners - SEPARATE EFFECT
+  useEffect(() => {
+    if (!socketRef.current || !user) return;
+
+    const socket = socketRef.current;
+
+    // Message event handlers
+    const handleReceiveMessage = (message: Message) => {
+      setMessages((prev) => [...prev, message]);
+
+      // Show notification if page is not visible
+      if (message.isNewMessage && !isPageVisible) {
+        if (message.type === "file") {
+          showNotification(
+            `New file from ${message.sender.username}`,
+            `${message.fileName} (${formatFileSize(message.fileSize || 0)})`,
+            "/favicon.ico"
+          );
+        } else {
+          showNotification(
+            `New message from ${message.sender.username}`,
+            message.content,
+            "/favicon.ico"
+          );
+        }
+      }
+
+      // Handle file message for DataChannel transfer
+      if (
+        message.type === "file" &&
+        message.isReceiverOnline &&
+        message.sender.id !== user?.id
+      ) {
+        console.log(
+          "File message received, transfer will happen via DataChannel"
+        );
+      }
+    };
+
+    const handleMessageSent = (message: Message) => {
+      setMessages((prev) => [...prev, message]);
+
+      // If it's a file message, store the file for the sender
+      if (message.type === "file" && selectedFileRef.current) {
+        const file = selectedFileRef.current;
+
+        // Store the file for the sender to preview/download
+        setFileTransfers((prev) => {
+          const newMap = new Map(prev);
+          newMap.set(message.id, {
+            messageId: message.id,
+            file: file,
+            progress: {
+              percentage: 100,
+              status: "completed",
+            },
+          });
+          return newMap;
+        });
+
+        // If receiver is online, also initiate transfer via DataChannel
+        if (message.isReceiverOnline && sendFileRef.current) {
+          console.log("Initiating file transfer via DataChannel");
+          sendFileRef.current(file, { messageId: message.id });
+        }
+
+        setSelectedFile(null);
+      }
+    };
+
+    const handleMessagesHistory = (history: Message[]) => {
+      setMessages(history);
+
+      // Clear existing file transfers when loading new history
+      setFileTransfers(new Map());
+
+      // Note: For persistent file storage across sessions, you would need to:
+      // 1. Store files in IndexedDB or a backend storage service
+      // 2. Retrieve them when loading message history
+      // For now, files are only available during the current session
+    };
+
+    const handleUnreadCounts = (counts: Record<string, number>) => {
+      setUnreadCounts(counts);
+    };
+
+    const handleMessagesMarkedRead = (data: { senderId: string }) => {
+      setMessages((prev) =>
+        prev.map((msg) =>
+          msg.sender.id === data.senderId ? { ...msg, isRead: true } : msg
+        )
+      );
+    };
+
+    const handleUserOnlineStatus = (data: {
+      userId: string;
+      isOnline: boolean;
+    }) => {
+      if (data.userId === selectedUserRef.current?.id) {
+        setIsUserOnline(data.isOnline);
+      }
+    };
+
+    // Call event handlers
+    const handleIncomingCall = (data: IncomingCall) => {
+      console.log("Incoming call received:", data);
+      setIncomingCall(data);
+      playRingTone();
+
+      if (!isPageVisible) {
+        showNotification(
+          `Incoming ${data.type} call`,
+          `${data.caller.username} is calling you`,
+          "/favicon.ico"
+        );
+      }
+    };
+
+    const handleCallInitiated = (data: { callId: string }) => {
+      console.log("Call initiated with ID:", data.callId);
+      setCurrentCall((prev) => {
+        if (prev && !prev.callId) {
+          return { ...prev, callId: data.callId };
+        }
+        return prev;
+      });
+    };
+
+    const handleCallAccepted = (data: { callId: string }) => {
+      console.log("Call accepted:", data.callId);
       stopAllRingtones();
-      socketInstance.disconnect();
-      socketRef.current = null;
+      setCurrentCall((prev) => {
+        if (prev && prev.callId === data.callId) {
+          return { ...prev, status: "connected" };
+        }
+        return prev;
+      });
+    };
+
+    const handleCallRejected = (data: { callId: string }) => {
+      console.log("Call rejected:", data.callId);
+      stopAllRingtones();
+      setCurrentCall((prev) => {
+        if (prev && prev.callId === data.callId) {
+          setTimeout(() => cleanupWebRTC(), 100);
+          return null;
+        }
+        return prev;
+      });
+    };
+
+    const handleCallEnded = (data: { callId: string }) => {
+      console.log("Call ended:", data.callId);
+      stopAllRingtones();
+      setCurrentCall((prev) => {
+        if (prev && prev.callId === data.callId) {
+          setTimeout(() => cleanupWebRTC(), 100);
+          return null;
+        }
+        return prev;
+      });
+      setIncomingCall(null);
+    };
+
+    const handleCallFailed = (data: { reason: string }) => {
+      console.log("Call failed:", data.reason);
+      stopAllRingtones();
+      alert(`Call failed: ${data.reason}`);
+      setCurrentCall(null);
+      cleanupWebRTC();
+    };
+
+    // Register all event listeners
+    socket.on("receive_message", handleReceiveMessage);
+    socket.on("message_sent", handleMessageSent);
+    socket.on("messages_history", handleMessagesHistory);
+    socket.on("unread_counts", handleUnreadCounts);
+    socket.on("messages_marked_read", handleMessagesMarkedRead);
+    socket.on("user_online_status", handleUserOnlineStatus);
+    socket.on("incoming_call", handleIncomingCall);
+    socket.on("call_initiated", handleCallInitiated);
+    socket.on("call_accepted", handleCallAccepted);
+    socket.on("call_rejected", handleCallRejected);
+    socket.on("call_ended", handleCallEnded);
+    socket.on("call_failed", handleCallFailed);
+
+    // Cleanup listeners
+    return () => {
+      socket.off("receive_message", handleReceiveMessage);
+      socket.off("message_sent", handleMessageSent);
+      socket.off("messages_history", handleMessagesHistory);
+      socket.off("unread_counts", handleUnreadCounts);
+      socket.off("messages_marked_read", handleMessagesMarkedRead);
+      socket.off("user_online_status", handleUserOnlineStatus);
+      socket.off("incoming_call", handleIncomingCall);
+      socket.off("call_initiated", handleCallInitiated);
+      socket.off("call_accepted", handleCallAccepted);
+      socket.off("call_rejected", handleCallRejected);
+      socket.off("call_ended", handleCallEnded);
+      socket.off("call_failed", handleCallFailed);
     };
   }, [
-    token,
+    user,
     isPageVisible,
     showNotification,
-    cleanupWebRTC,
     playRingTone,
     stopAllRingtones,
+    cleanupWebRTC,
+    formatFileSize,
   ]);
+
+  // Check if selected user is online
+  useEffect(() => {
+    if (socketRef.current && selectedUser) {
+      socketRef.current.emit("check_user_online", { userId: selectedUser.id });
+    }
+  }, [selectedUser]);
 
   // Fetch users on mount
   useEffect(() => {
-    fetchUsers();
+    if (token) {
+      fetchUsers();
+    }
   }, [token]);
 
-  useEffect(() => {
-    scrollToBottom();
-  }, [messages]);
-
+  // Show notification prompt
   useEffect(() => {
     if (isNotificationSupported && notificationPermission === "default") {
       setShowNotificationPrompt(true);
@@ -332,7 +520,6 @@ export default function ChatInterface() {
       !isConnected
     ) {
       console.log("Creating offer for accepted call");
-      // Small delay to ensure everything is set up
       const timer = setTimeout(() => {
         createOffer();
       }, 500);
@@ -356,6 +543,7 @@ export default function ChatInterface() {
         : "Solar-ICT Chat App";
   }, [unreadCounts]);
 
+  // Utility functions
   const fetchUsers = async () => {
     try {
       const response = await fetch("https://tbk.solar-ict.com/users", {
@@ -370,44 +558,6 @@ export default function ChatInterface() {
     }
   };
 
-  const selectUser = useCallback(
-    (selectedUser: User) => {
-      setSelectedUser(selectedUser);
-      setMessages([]);
-      setShowSidebar(false);
-
-      if (socket) {
-        socket.emit("get_messages", { otherUserId: selectedUser.id });
-        socket.emit("set_active_chat", { receiverId: selectedUser.id });
-      }
-    },
-    [socket]
-  );
-
-  const sendMessage = useCallback(
-    (e: React.FormEvent) => {
-      e.preventDefault();
-      if (!newMessage.trim() || !selectedUser || !socket) return;
-
-      socket.emit("send_message", {
-        receiverId: selectedUser.id,
-        content: newMessage,
-      });
-
-      setNewMessage("");
-    },
-    [newMessage, selectedUser, socket]
-  );
-
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  };
-
-  const handleNotificationPermission = async () => {
-    await requestNotificationPermission();
-    setShowNotificationPrompt(false);
-  };
-
   const getTotalUnreadCount = () => {
     return Object.values(unreadCounts).reduce(
       (total, count) => total + count,
@@ -415,27 +565,87 @@ export default function ChatInterface() {
     );
   };
 
+  const selectUser = useCallback((selectedUser: User) => {
+    setSelectedUser(selectedUser);
+    setMessages([]);
+    setShowSidebar(false);
+    setSelectedFile(null);
+    setFileTransfers(new Map());
+
+    if (socketRef.current) {
+      socketRef.current.emit("get_messages", { otherUserId: selectedUser.id });
+      socketRef.current.emit("set_active_chat", {
+        receiverId: selectedUser.id,
+      });
+      socketRef.current.emit("check_user_online", { userId: selectedUser.id });
+    }
+  }, []);
+
+  const sendMessage = useCallback(
+    (e: React.FormEvent) => {
+      e.preventDefault();
+      if (!newMessage.trim() || !selectedUser || !socketRef.current) return;
+
+      socketRef.current.emit("send_message", {
+        receiverId: selectedUser.id,
+        content: newMessage,
+      });
+
+      setNewMessage("");
+    },
+    [newMessage, selectedUser]
+  );
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    // Check file size (10MB limit)
+    if (file.size > 10 * 1024 * 1024) {
+      alert("File size must be less than 10MB");
+      e.target.value = "";
+      return;
+    }
+
+    setSelectedFile(file);
+    e.target.value = "";
+  };
+
+  const sendFileMessage = useCallback(() => {
+    if (!selectedFile || !selectedUser || !socketRef.current) return;
+
+    socketRef.current.emit("send_file_message", {
+      receiverId: selectedUser.id,
+      content: `Sent a file: ${selectedFile.name}`,
+      fileName: selectedFile.name,
+      fileSize: selectedFile.size,
+      fileType: selectedFile.type,
+    });
+  }, [selectedFile, selectedUser]);
+
+  const removeSelectedFile = () => {
+    setSelectedFile(null);
+  };
+
+  const handleNotificationPermission = async () => {
+    await requestNotificationPermission();
+    setShowNotificationPrompt(false);
+  };
+
   // Call functions
   const initiateCall = useCallback(
     async (type: "audio" | "video") => {
-      if (!selectedUser || !socket) {
+      if (!selectedUser || !socketRef.current) {
         console.error("Cannot initiate call - missing selectedUser or socket");
         return;
       }
 
       try {
         console.log("Initiating", type, "call to", selectedUser.username);
-
-        // Initialize peer connection first
         initializePeerConnection();
-
-        // Get user media
         const stream = await getUserMedia(type === "video");
-
-        // Add stream to peer connection
         addLocalStream(stream);
 
-        // Set up call state
         setCurrentCall({
           callId: "",
           type,
@@ -444,11 +654,9 @@ export default function ChatInterface() {
           isInitiator: true,
         });
 
-        // Play dial tone for outgoing call
         playDialTone();
 
-        // Initiate call through socket
-        socket.emit("initiate_call", {
+        socketRef.current.emit("initiate_call", {
           receiverId: selectedUser.id,
           type,
         });
@@ -462,7 +670,6 @@ export default function ChatInterface() {
     },
     [
       selectedUser,
-      socket,
       getUserMedia,
       initializePeerConnection,
       addLocalStream,
@@ -473,27 +680,18 @@ export default function ChatInterface() {
   );
 
   const acceptCall = useCallback(async () => {
-    if (!incomingCall || !socket) {
+    if (!incomingCall || !socketRef.current) {
       console.error("Cannot accept call - missing incomingCall or socket");
       return;
     }
 
     try {
       console.log("Accepting call:", incomingCall.callId);
-
-      // Stop ring tone when accepting call
       stopAllRingtones();
-
-      // Initialize peer connection first
       initializePeerConnection();
-
-      // Get user media
       const stream = await getUserMedia(incomingCall.type === "video");
-
-      // Add stream to peer connection
       addLocalStream(stream);
 
-      // Set up call state
       setCurrentCall({
         callId: incomingCall.callId,
         type: incomingCall.type,
@@ -502,8 +700,7 @@ export default function ChatInterface() {
         isInitiator: false,
       });
 
-      // Accept call through socket
-      socket.emit("accept_call", {
+      socketRef.current.emit("accept_call", {
         callId: incomingCall.callId,
       });
 
@@ -515,7 +712,6 @@ export default function ChatInterface() {
     }
   }, [
     incomingCall,
-    socket,
     getUserMedia,
     initializePeerConnection,
     addLocalStream,
@@ -523,41 +719,37 @@ export default function ChatInterface() {
   ]);
 
   const rejectCall = useCallback(() => {
-    if (!incomingCall || !socket) {
+    if (!incomingCall || !socketRef.current) {
       console.error("Cannot reject call - missing incomingCall or socket");
       return;
     }
 
     console.log("Rejecting call:", incomingCall.callId);
-
-    // Stop ring tone when rejecting call
     stopAllRingtones();
 
-    socket.emit("reject_call", {
+    socketRef.current.emit("reject_call", {
       callId: incomingCall.callId,
     });
 
     setIncomingCall(null);
-  }, [incomingCall, socket, stopAllRingtones]);
+  }, [incomingCall, stopAllRingtones]);
 
   const endCall = useCallback(() => {
-    if (!currentCall || !socket) {
+    if (!currentCall || !socketRef.current) {
       console.error("Cannot end call - missing currentCall or socket");
       return;
     }
 
     console.log("Ending call:", currentCall.callId);
-
-    // Stop all ringtones when ending call
     stopAllRingtones();
 
-    socket.emit("end_call", {
+    socketRef.current.emit("end_call", {
       callId: currentCall.callId,
     });
 
     setCurrentCall(null);
     cleanupWebRTC();
-  }, [currentCall, socket, stopAllRingtones, cleanupWebRTC]);
+  }, [currentCall, stopAllRingtones, cleanupWebRTC]);
 
   const handleToggleMute = useCallback(
     (isMuted: boolean) => {
@@ -573,18 +765,23 @@ export default function ChatInterface() {
     [toggleVideo]
   );
 
-  // Function to mark messages as read
   const markMessagesAsRead = useCallback(() => {
-    if (selectedUser && socket && unreadCounts[selectedUser.id] > 0) {
-      socket.emit("mark_messages_read", { senderId: selectedUser.id });
+    if (
+      selectedUser &&
+      socketRef.current &&
+      unreadCounts[selectedUser.id] > 0
+    ) {
+      socketRef.current.emit("mark_messages_read", {
+        senderId: selectedUser.id,
+      });
     }
-  }, [selectedUser, socket, unreadCounts]);
+  }, [selectedUser, unreadCounts]);
 
-  // Handle text input focus to mark messages as read
   const handleInputFocus = useCallback(() => {
     markMessagesAsRead();
   }, [markMessagesAsRead]);
 
+  // Main render
   return (
     <div className="flex h-screen bg-gray-100 relative overflow-hidden">
       {/* Call Modal */}
@@ -637,237 +834,52 @@ export default function ChatInterface() {
         </div>
       )}
 
-      {/* Mobile Sidebar Overlay */}
-      {showSidebar && (
-        <div
-          className="fixed inset-0 bg-gray-100 bg-opacity-75 z-40 md:hidden"
-          onClick={() => setShowSidebar(false)}
-        />
-      )}
-
       {/* Sidebar */}
-      <div
-        className={`${
-          showSidebar ? "translate-x-0" : "-translate-x-full"
-        } fixed inset-y-0 left-0 z-50 w-80 bg-white border-r border-gray-300 transform transition-transform duration-300 ease-in-out md:relative md:translate-x-0 md:w-1/4 flex flex-col`}
-      >
-        <div className="p-4 border-b border-gray-300 flex-shrink-0">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center space-x-2">
-              <h1 className="text-xl font-semibold">Messages</h1>
-              {getTotalUnreadCount() > 0 && (
-                <span className="bg-red-500 text-white text-xs rounded-full px-2 py-1 min-w-[20px] text-center">
-                  {getTotalUnreadCount()}
-                </span>
-              )}
-            </div>
-            <div className="flex items-center space-x-2">
-              <button
-                onClick={logout}
-                className="text-sm text-gray-500 hover:text-gray-700"
-              >
-                Logout
-              </button>
-              <button
-                onClick={() => setShowSidebar(false)}
-                className="md:hidden text-gray-500 hover:text-gray-700"
-              >
-                ✕
-              </button>
-            </div>
-          </div>
-          <p className="text-sm text-gray-600 truncate">
-            Welcome, {user?.username}!
-          </p>
-        </div>
-
-        <div className="flex-1 overflow-y-auto">
-          {users && users.length > 0 ? (
-            users.map((u) => (
-              <div
-                key={u.id}
-                className={`p-4 border-b border-gray-100 cursor-pointer hover:bg-gray-50 ${
-                  selectedUser?.id === u.id ? "bg-blue-50 border-blue-200" : ""
-                }`}
-                onClick={() => selectUser(u)}
-              >
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center space-x-3 flex-1 min-w-0">
-                    <div className="w-10 h-10 bg-gray-300 rounded-full flex items-center justify-center flex-shrink-0 overflow-hidden">
-                      {u.avatar ? (
-                        <img
-                          src={u.avatar}
-                          alt={u.username}
-                          className="w-full h-full object-cover"
-                        />
-                      ) : (
-                        <span className="text-gray-600 font-medium">
-                          {u.username.charAt(0).toUpperCase()}
-                        </span>
-                      )}
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <h3 className="font-medium text-gray-900 truncate">
-                        {u.username}
-                      </h3>
-                      <p className="text-sm text-gray-500 truncate">
-                        {u.email}
-                      </p>
-                    </div>
-                  </div>
-                  {unreadCounts[u.id] > 0 && (
-                    <span className="bg-red-500 text-white text-xs rounded-full px-2 py-1 min-w-[20px] text-center flex-shrink-0">
-                      {unreadCounts[u.id]}
-                    </span>
-                  )}
-                </div>
-              </div>
-            ))
-          ) : (
-            <div className="p-4 text-center text-gray-500">
-              <p>Loading users...</p>
-            </div>
-          )}
-        </div>
-      </div>
+      <Sidebar
+        users={users}
+        selectedUser={selectedUser}
+        unreadCounts={unreadCounts}
+        currentUser={user}
+        showSidebar={showSidebar}
+        onSelectUser={selectUser}
+        onCloseSidebar={() => setShowSidebar(false)}
+        onLogout={logout}
+      />
 
       {/* Chat Area */}
       <div className="flex-1 flex flex-col min-w-0 min-h-0">
         {selectedUser ? (
           <>
             {/* Chat Header */}
-            <div className="bg-white border-b border-gray-300 p-4 flex-shrink-0">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center space-x-3">
-                  <button
-                    onClick={() => setShowSidebar(true)}
-                    className="md:hidden text-gray-500 hover:text-gray-700 mr-2"
-                  >
-                    <svg
-                      className="w-6 h-6"
-                      fill="none"
-                      stroke="currentColor"
-                      viewBox="0 0 24 24"
-                    >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        strokeWidth={2}
-                        d="M4 6h16M4 12h16M4 18h16"
-                      />
-                    </svg>
-                  </button>
-                  <div className="w-10 h-10 bg-gray-300 rounded-full flex items-center justify-center overflow-hidden">
-                    {selectedUser.avatar ? (
-                      <img
-                        src={selectedUser.avatar}
-                        alt={selectedUser.username}
-                        className="w-full h-full object-cover"
-                      />
-                    ) : (
-                      <span className="text-gray-600 font-medium">
-                        {selectedUser.username.charAt(0).toUpperCase()}
-                      </span>
-                    )}
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <h2 className="font-medium text-gray-900 truncate">
-                      {selectedUser.username}
-                    </h2>
-                    <p className="text-sm text-gray-500 truncate">
-                      {selectedUser.email}
-                    </p>
-                  </div>
-                </div>
-
-                <div className="flex items-center space-x-2">
-                  {/* Call buttons */}
-                  <button
-                    onClick={() => initiateCall("audio")}
-                    disabled={!!currentCall || !!incomingCall}
-                    className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-full transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                    title="Audio call"
-                  >
-                    <Phone className="w-5 h-5" />
-                  </button>
-                  <button
-                    onClick={() => initiateCall("video")}
-                    disabled={!!currentCall || !!incomingCall}
-                    className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-full transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                    title="Video call"
-                  >
-                    <Video className="w-5 h-5" />
-                  </button>
-
-                  {unreadCounts[selectedUser.id] > 0 && (
-                    <span className="bg-red-500 text-white text-xs rounded-full px-2 py-1 min-w-[20px] text-center">
-                      {unreadCounts[selectedUser.id]} unread
-                    </span>
-                  )}
-                </div>
-              </div>
-            </div>
+            <ChatHeader
+              selectedUser={selectedUser}
+              isUserOnline={isUserOnline}
+              unreadCount={unreadCounts[selectedUser.id] || 0}
+              isCallActive={!!currentCall || !!incomingCall}
+              onShowSidebar={() => setShowSidebar(true)}
+              onInitiateCall={initiateCall}
+            />
 
             {/* Messages */}
-            <div className="flex-1 overflow-y-auto p-4 space-y-4 min-h-0">
-              {messages.map((message) => (
-                <div
-                  key={message.id}
-                  className={`flex ${
-                    message.sender.id === user?.id
-                      ? "justify-end"
-                      : "justify-start"
-                  }`}
-                >
-                  <div
-                    className={`max-w-xs sm:max-w-md lg:max-w-lg xl:max-w-xl px-4 py-2 rounded-lg ${
-                      message.sender.id === user?.id
-                        ? "bg-blue-600 text-white"
-                        : "bg-gray-200 text-gray-900"
-                    }`}
-                  >
-                    <p className="text-sm break-words">{message.content}</p>
-                    <div className="flex items-center justify-between mt-1">
-                      <p className="text-xs opacity-75">
-                        {new Date(message.createdAt).toLocaleTimeString([], {
-                          hour: "2-digit",
-                          minute: "2-digit",
-                        })}
-                      </p>
-                      {message.sender.id === user?.id && (
-                        <span className="text-xs opacity-75 ml-2">
-                          {message.isRead ? "✓✓" : "✓"}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              ))}
-              <div ref={messagesEndRef} />
-            </div>
+            <MessageList
+              messages={messages}
+              currentUserId={user?.id || ""}
+              fileTransfers={fileTransfers}
+            />
 
             {/* Message Input */}
-            <div className="bg-white border-t border-gray-300 p-4 flex-shrink-0">
-              <form onSubmit={sendMessage}>
-                <div className="flex space-x-2 sm:space-x-4">
-                  <input
-                    type="text"
-                    value={newMessage}
-                    onChange={(e) => setNewMessage(e.target.value)}
-                    onFocus={handleInputFocus}
-                    placeholder="Type a message..."
-                    className="flex-1 border border-gray-300 rounded-full px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  />
-                  <button
-                    type="submit"
-                    disabled={!newMessage.trim()}
-                    className="bg-blue-600 text-white px-4 sm:px-6 py-2 rounded-full hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    Send
-                  </button>
-                </div>
-              </form>
-            </div>
+            <MessageInput
+              newMessage={newMessage}
+              selectedFile={selectedFile}
+              isUserOnline={isUserOnline}
+              onMessageChange={setNewMessage}
+              onSendMessage={sendMessage}
+              onSendFile={sendFileMessage}
+              onFileSelect={handleFileSelect}
+              onRemoveFile={removeSelectedFile}
+              onInputFocus={handleInputFocus}
+              formatFileSize={formatFileSize}
+            />
           </>
         ) : (
           <div className="flex-1 flex items-center justify-center p-4">
