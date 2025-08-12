@@ -95,7 +95,7 @@ export default function ChatInterface() {
   const ringTone = useRef<HTMLAudioElement | null>(null);
   const selectedFileRef = useRef<File | null>(null);
   const selectedUserRef = useRef<User | null>(null);
-  const sendFileRef = useRef<((file: File, metadata: any) => void) | null>(
+  const sendFileRef = useRef<((file: File, metadata: any) => boolean) | null>(
     null
   );
 
@@ -120,7 +120,9 @@ export default function ChatInterface() {
   // WebRTC File Transfer Hook
   const {
     isChannelReady,
+    connectionState,
     sendFile,
+    establishConnection,
     transferProgress,
     cleanup: cleanupFileTransfer,
   } = useWebRTCFileTransfer({
@@ -166,6 +168,32 @@ export default function ChatInterface() {
   useEffect(() => {
     sendFileRef.current = sendFile;
   }, [sendFile]);
+
+  // Keep establishConnection available
+  const establishConnectionRef = useRef<(() => void) | null>(null);
+  useEffect(() => {
+    establishConnectionRef.current = establishConnection;
+  }, [establishConnection]);
+
+  // Debug connection state (development only)
+  useEffect(() => {
+    if (selectedUser) {
+      console.log(
+        `File transfer connection state for ${selectedUser.username}:`,
+        {
+          connectionState,
+          isChannelReady,
+        }
+      );
+
+      // Show user feedback for connection issues
+      if (connectionState === "failed") {
+        console.warn(
+          "WebRTC P2P connection failed - files will be queued until connection is restored"
+        );
+      }
+    }
+  }, [selectedUser, connectionState, isChannelReady]);
 
   // Initialize audio on component mount
   useEffect(() => {
@@ -249,7 +277,7 @@ export default function ChatInterface() {
     if (!token || socketRef.current) return;
 
     console.log("Initializing socket connection");
-    const socketInstance = io("https://tbk.solar-ict.com", {
+    const socketInstance = io("http://localhost:3001", {
       auth: { token },
       reconnection: true,
       reconnectionAttempts: 5,
@@ -338,10 +366,30 @@ export default function ChatInterface() {
           return newMap;
         });
 
-        // If receiver is online, also initiate transfer via DataChannel
+        // If receiver is online, initiate transfer via DataChannel
         if (message.isReceiverOnline && sendFileRef.current) {
           console.log("Initiating file transfer via DataChannel");
-          sendFileRef.current(file, { messageId: message.id });
+
+          const success = sendFileRef.current(file, { messageId: message.id });
+
+          if (!success) {
+            console.log("File queued, P2P connection will be established");
+            // Update the file transfer status to show it's pending
+            setFileTransfers((prev) => {
+              const newMap = new Map(prev);
+              const existing = newMap.get(message.id);
+              if (existing) {
+                newMap.set(message.id, {
+                  ...existing,
+                  progress: {
+                    percentage: 0,
+                    status: "pending",
+                  },
+                });
+              }
+              return newMap;
+            });
+          }
         }
 
         setSelectedFile(null);
@@ -546,7 +594,7 @@ export default function ChatInterface() {
   // Utility functions
   const fetchUsers = async () => {
     try {
-      const response = await fetch("https://tbk.solar-ict.com/users", {
+      const response = await fetch("http://localhost:3001/users", {
         headers: {
           Authorization: `Bearer ${token}`,
         },
@@ -605,6 +653,14 @@ export default function ChatInterface() {
       alert("File size must be less than 10MB");
       e.target.value = "";
       return;
+    }
+
+    // Proactively establish WebRTC connection when user selects a file
+    if (connectionState === "disconnected" && establishConnectionRef.current) {
+      console.log(
+        "Establishing WebRTC connection proactively for file transfer"
+      );
+      establishConnectionRef.current();
     }
 
     setSelectedFile(file);
