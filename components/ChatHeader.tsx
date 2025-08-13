@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { Phone, Video } from "lucide-react";
+import { Phone, Video, Monitor } from "lucide-react";
 
 interface User {
   id: string;
@@ -16,7 +16,7 @@ interface ChatHeaderProps {
   unreadCount: number;
   isCallActive: boolean;
   onShowSidebar: () => void;
-  onInitiateCall: (type: "audio" | "video") => void;
+  onInitiateCall: (type: "audio" | "video" | "screen") => void;
 }
 
 export default function ChatHeader({
@@ -93,6 +93,14 @@ export default function ChatHeader({
             title="Video call"
           >
             <Video className="w-5 h-5" />
+          </button>
+          <button
+            onClick={() => onInitiateCall("screen")}
+            disabled={isCallActive}
+            className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-full transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            title="Screen share"
+          >
+            <Monitor className="w-5 h-5" />
           </button>
 
           {unreadCount > 0 && (

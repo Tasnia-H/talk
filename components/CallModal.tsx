@@ -1,7 +1,16 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { Phone, PhoneOff, Video, VideoOff, Mic, MicOff } from "lucide-react";
+import {
+  Phone,
+  PhoneOff,
+  Video,
+  VideoOff,
+  Mic,
+  MicOff,
+  Monitor,
+  MonitorOff,
+} from "lucide-react";
 
 interface User {
   id: string;
@@ -11,7 +20,7 @@ interface User {
 
 interface CallModalProps {
   isOpen: boolean;
-  callType: "audio" | "video";
+  callType: "audio" | "video" | "screen";
   callStatus: "outgoing" | "incoming" | "connected" | "ended";
   otherUser: User;
   onAccept?: () => void;
@@ -19,9 +28,11 @@ interface CallModalProps {
   onEnd: () => void;
   onToggleMute?: (isMuted: boolean) => void;
   onToggleVideo?: (isVideoOff: boolean) => void;
+  onToggleScreenShare?: (isScreenShareOff: boolean) => void;
   onForceReleaseVideo?: () => void;
   localStream?: MediaStream;
   remoteStream?: MediaStream;
+  isScreenSharing?: boolean;
 }
 
 export default function CallModal({
@@ -34,18 +45,46 @@ export default function CallModal({
   onEnd,
   onToggleMute,
   onToggleVideo,
+  onToggleScreenShare,
   onForceReleaseVideo,
   localStream,
   remoteStream,
+  isScreenSharing = false,
 }: CallModalProps) {
   const [isMuted, setIsMuted] = useState(false);
-  const [isVideoOff, setIsVideoOff] = useState(false);
+  const [isVideoOff, setIsVideoOff] = useState(
+    callType === "audio" || callType === "screen"
+  );
+  const [isScreenShareOff, setIsScreenShareOff] = useState(
+    callType !== "screen"
+  );
   const [callDuration, setCallDuration] = useState(0);
 
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
   const localAudioRef = useRef<HTMLAudioElement>(null);
   const remoteAudioRef = useRef<HTMLAudioElement>(null);
+
+  // Initialize control states based on call type
+  useEffect(() => {
+    switch (callType) {
+      case "audio":
+        setIsMuted(false);
+        setIsVideoOff(true);
+        setIsScreenShareOff(true);
+        break;
+      case "video":
+        setIsMuted(false);
+        setIsVideoOff(false);
+        setIsScreenShareOff(true);
+        break;
+      case "screen":
+        setIsMuted(true); // Audio should be muted for screen calls
+        setIsVideoOff(true);
+        setIsScreenShareOff(false);
+        break;
+    }
+  }, [callType]);
 
   // Call duration timer
   useEffect(() => {
@@ -65,9 +104,16 @@ export default function CallModal({
   // Handle local stream
   useEffect(() => {
     if (localStream) {
-      if (callType === "video" && localVideoRef.current) {
+      if (localVideoRef.current) {
+        // Always use video element for all call types when connected
         localVideoRef.current.srcObject = localStream;
-      } else if (callType === "audio" && localAudioRef.current) {
+        // Ensure the video plays
+        localVideoRef.current.play().catch((err) => {
+          console.log("Local video autoplay prevented:", err);
+        });
+      }
+      if (callType === "audio" && localAudioRef.current) {
+        // Also set audio element for audio calls
         localAudioRef.current.srcObject = localStream;
       }
     }
@@ -76,9 +122,16 @@ export default function CallModal({
   // Handle remote stream
   useEffect(() => {
     if (remoteStream) {
-      if (callType === "video" && remoteVideoRef.current) {
+      if (remoteVideoRef.current) {
+        // Always use video element for all call types when connected
         remoteVideoRef.current.srcObject = remoteStream;
-      } else if (callType === "audio" && remoteAudioRef.current) {
+        // Ensure the video plays
+        remoteVideoRef.current.play().catch((err) => {
+          console.log("Remote video autoplay prevented:", err);
+        });
+      }
+      if (callType === "audio" && remoteAudioRef.current) {
+        // Also set audio element for audio calls
         remoteAudioRef.current.srcObject = remoteStream;
       }
     }
@@ -91,11 +144,15 @@ export default function CallModal({
   };
 
   const toggleVideo = () => {
-    if (callType !== "video") return;
-
     const newVideoOffState = !isVideoOff;
     setIsVideoOff(newVideoOffState);
     onToggleVideo?.(newVideoOffState);
+  };
+
+  const toggleScreenShare = () => {
+    const newScreenShareOffState = !isScreenShareOff;
+    setIsScreenShareOff(newScreenShareOffState);
+    onToggleScreenShare?.(newScreenShareOffState);
   };
 
   const formatDuration = (seconds: number) => {
@@ -121,32 +178,55 @@ export default function CallModal({
     }
   };
 
+  const getCallTypeDisplayText = () => {
+    if (callStatus === "connected") {
+      // Show current active features
+      const features = [];
+      if (!isMuted) features.push("🎤");
+      if (!isVideoOff) features.push("📹");
+      if (!isScreenShareOff || isScreenSharing) features.push("🖥️");
+      return features.length > 0 ? features.join(" ") : "Connected";
+    }
+
+    switch (callType) {
+      case "audio":
+        return "Audio call";
+      case "video":
+        return "Video call";
+      case "screen":
+        return "Screen sharing";
+      default:
+        return "Call";
+    }
+  };
+
   if (!isOpen) return null;
 
   return (
     <div className="fixed inset-0 bg-gray-100 bg-opacity-95 backdrop-blur-sm flex items-center justify-center z-50">
       <div className="bg-white rounded-xl shadow-2xl p-6 max-w-md w-full mx-4 border border-gray-200 ring-1 ring-gray-900/5">
-        {callType === "video" && callStatus === "connected" ? (
+        {callStatus === "connected" ? (
           <div className="relative">
             {/* Remote video */}
             <video
               ref={remoteVideoRef}
               autoPlay
               playsInline
+              muted={false}
               className="w-full h-64 bg-gray-800 rounded-lg object-cover"
             />
 
             {/* Local video (picture-in-picture) */}
             <div className="absolute top-4 right-4 w-24 h-32 bg-gray-600 rounded border-2 border-white overflow-hidden">
-              {isVideoOff ? (
-                // Show avatar when video is off
+              {isVideoOff && !isScreenSharing ? (
+                // Show avatar when video is off and not screen sharing
                 <div className="w-full h-full bg-gray-700 flex items-center justify-center">
                   <span className="text-white text-lg font-medium">
                     {otherUser.username.charAt(0).toUpperCase()}
                   </span>
                 </div>
               ) : (
-                // Show video when video is on
+                // Show video when video is on or screen sharing
                 <video
                   ref={localVideoRef}
                   autoPlay
@@ -183,10 +263,12 @@ export default function CallModal({
             <div className="flex items-center justify-center mb-2">
               {callType === "video" ? (
                 <Video className="w-5 h-5 text-gray-500 mr-2" />
+              ) : callType === "screen" ? (
+                <Monitor className="w-5 h-5 text-gray-500 mr-2" />
               ) : (
                 <Phone className="w-5 h-5 text-gray-500 mr-2" />
               )}
-              <span className="text-gray-500 capitalize">{callType} call</span>
+              <span className="text-gray-500">{getCallTypeDisplayText()}</span>
             </div>
 
             {/* Status */}
@@ -194,13 +276,9 @@ export default function CallModal({
           </div>
         )}
 
-        {/* Hidden audio elements for audio calls */}
-        {callType === "audio" && (
-          <>
-            <audio ref={localAudioRef} autoPlay muted />
-            <audio ref={remoteAudioRef} autoPlay />
-          </>
-        )}
+        {/* Hidden audio elements for all calls (as backup) */}
+        <audio ref={localAudioRef} autoPlay muted />
+        <audio ref={remoteAudioRef} autoPlay />
 
         {/* Call controls */}
         <div className="flex justify-center space-x-4">
@@ -239,23 +317,37 @@ export default function CallModal({
                 )}
               </button>
 
-              {/* Video toggle (only for video calls) */}
-              {callType === "video" && (
-                <button
-                  onClick={toggleVideo}
-                  className={`p-3 rounded-full transition-colors ${
-                    isVideoOff
-                      ? "bg-red-500 hover:bg-red-600 text-white"
-                      : "bg-gray-200 hover:bg-gray-300 text-gray-700"
-                  }`}
-                >
-                  {isVideoOff ? (
-                    <VideoOff className="w-6 h-6" />
-                  ) : (
-                    <Video className="w-6 h-6" />
-                  )}
-                </button>
-              )}
+              {/* Video toggle */}
+              <button
+                onClick={toggleVideo}
+                className={`p-3 rounded-full transition-colors ${
+                  isVideoOff
+                    ? "bg-red-500 hover:bg-red-600 text-white"
+                    : "bg-gray-200 hover:bg-gray-300 text-gray-700"
+                }`}
+              >
+                {isVideoOff ? (
+                  <VideoOff className="w-6 h-6" />
+                ) : (
+                  <Video className="w-6 h-6" />
+                )}
+              </button>
+
+              {/* Screen share toggle */}
+              <button
+                onClick={toggleScreenShare}
+                className={`p-3 rounded-full transition-colors ${
+                  isScreenShareOff && !isScreenSharing
+                    ? "bg-red-500 hover:bg-red-600 text-white"
+                    : "bg-gray-200 hover:bg-gray-300 text-gray-700"
+                }`}
+              >
+                {isScreenShareOff && !isScreenSharing ? (
+                  <MonitorOff className="w-6 h-6" />
+                ) : (
+                  <Monitor className="w-6 h-6" />
+                )}
+              </button>
 
               {/* End call button */}
               <button
@@ -270,7 +362,6 @@ export default function CallModal({
 
         {/* Testing buttons for development */}
         {process.env.NODE_ENV === "development" &&
-          callType === "video" &&
           (callStatus === "outgoing" || callStatus === "connected") && (
             <div className="mt-4 pt-4 border-t border-gray-200">
               <p className="text-xs text-gray-500 text-center mb-2">

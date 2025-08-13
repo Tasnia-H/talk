@@ -38,12 +38,12 @@ interface Message {
 interface IncomingCall {
   callId: string;
   caller: User;
-  type: "audio" | "video";
+  type: "audio" | "video" | "screen";
 }
 
 interface CallState {
   callId: string;
-  type: "audio" | "video";
+  type: "audio" | "video" | "screen";
   status: "outgoing" | "incoming" | "connected" | "ended";
   otherUser: User;
   isInitiator: boolean;
@@ -258,12 +258,15 @@ export default function ChatInterface() {
     localStream,
     remoteStream,
     isConnected,
+    isScreenSharing,
     getUserMedia,
+    getDisplayMedia,
     addLocalStream,
     createOffer,
     initializePeerConnection,
     toggleMute,
     toggleVideo,
+    toggleScreenShare,
     forceReleaseVideo,
     cleanup: cleanupWebRTC,
   } = useWebRTC({
@@ -277,7 +280,7 @@ export default function ChatInterface() {
     if (!token || socketRef.current) return;
 
     console.log("Initializing socket connection");
-    const socketInstance = io("https://tbk.solar-ict.com", {
+    const socketInstance = io("http://localhost:3001", {
       auth: { token },
       reconnection: true,
       reconnectionAttempts: 5,
@@ -436,8 +439,10 @@ export default function ChatInterface() {
       playRingTone();
 
       if (!isPageVisible) {
+        const callTypeText =
+          data.type === "screen" ? "screen sharing" : `${data.type} call`;
         showNotification(
-          `Incoming ${data.type} call`,
+          `Incoming ${callTypeText}`,
           `${data.caller.username} is calling you`,
           "/favicon.ico"
         );
@@ -594,7 +599,7 @@ export default function ChatInterface() {
   // Utility functions
   const fetchUsers = async () => {
     try {
-      const response = await fetch("https://tbk.solar-ict.com/users", {
+      const response = await fetch("http://localhost:3001/users", {
         headers: {
           Authorization: `Bearer ${token}`,
         },
@@ -690,7 +695,7 @@ export default function ChatInterface() {
 
   // Call functions
   const initiateCall = useCallback(
-    async (type: "audio" | "video") => {
+    async (type: "audio" | "video" | "screen") => {
       if (!selectedUser || !socketRef.current) {
         console.error("Cannot initiate call - missing selectedUser or socket");
         return;
@@ -699,7 +704,17 @@ export default function ChatInterface() {
       try {
         console.log("Initiating", type, "call to", selectedUser.username);
         initializePeerConnection();
-        const stream = await getUserMedia(type === "video");
+
+        let stream: MediaStream;
+        if (type === "screen") {
+          stream = await getDisplayMedia();
+          // For screen calls, mute audio initially
+          const audioTracks = stream.getAudioTracks();
+          audioTracks.forEach((track) => (track.enabled = false));
+        } else {
+          stream = await getUserMedia(type === "video");
+        }
+
         addLocalStream(stream);
 
         setCurrentCall({
@@ -718,7 +733,11 @@ export default function ChatInterface() {
         });
       } catch (error) {
         console.error("Failed to initiate call:", error);
-        alert("Failed to access camera/microphone");
+        const errorMessage =
+          type === "screen"
+            ? "Failed to access screen sharing"
+            : "Failed to access camera/microphone";
+        alert(errorMessage);
         stopAllRingtones();
         setCurrentCall(null);
         cleanupWebRTC();
@@ -727,6 +746,7 @@ export default function ChatInterface() {
     [
       selectedUser,
       getUserMedia,
+      getDisplayMedia,
       initializePeerConnection,
       addLocalStream,
       playDialTone,
@@ -745,7 +765,17 @@ export default function ChatInterface() {
       console.log("Accepting call:", incomingCall.callId);
       stopAllRingtones();
       initializePeerConnection();
-      const stream = await getUserMedia(incomingCall.type === "video");
+
+      let stream: MediaStream;
+      if (incomingCall.type === "screen") {
+        stream = await getDisplayMedia();
+        // For screen calls, mute audio initially
+        const audioTracks = stream.getAudioTracks();
+        audioTracks.forEach((track) => (track.enabled = false));
+      } else {
+        stream = await getUserMedia(incomingCall.type === "video");
+      }
+
       addLocalStream(stream);
 
       setCurrentCall({
@@ -763,12 +793,17 @@ export default function ChatInterface() {
       setIncomingCall(null);
     } catch (error) {
       console.error("Failed to accept call:", error);
-      alert("Failed to access camera/microphone");
+      const errorMessage =
+        incomingCall.type === "screen"
+          ? "Failed to access screen sharing"
+          : "Failed to access camera/microphone";
+      alert(errorMessage);
       rejectCall();
     }
   }, [
     incomingCall,
     getUserMedia,
+    getDisplayMedia,
     initializePeerConnection,
     addLocalStream,
     stopAllRingtones,
@@ -821,6 +856,13 @@ export default function ChatInterface() {
     [toggleVideo]
   );
 
+  const handleToggleScreenShare = useCallback(
+    (isScreenShareOff: boolean) => {
+      toggleScreenShare(isScreenShareOff);
+    },
+    [toggleScreenShare]
+  );
+
   const markMessagesAsRead = useCallback(() => {
     if (
       selectedUser &&
@@ -856,9 +898,11 @@ export default function ChatInterface() {
           onEnd={endCall}
           onToggleMute={handleToggleMute}
           onToggleVideo={handleToggleVideo}
+          onToggleScreenShare={handleToggleScreenShare}
           onForceReleaseVideo={forceReleaseVideo}
           localStream={localStream || undefined}
           remoteStream={remoteStream || undefined}
+          isScreenSharing={isScreenSharing}
         />
       )}
 
