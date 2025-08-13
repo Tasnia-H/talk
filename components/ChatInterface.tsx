@@ -280,7 +280,7 @@ export default function ChatInterface() {
     if (!token || socketRef.current) return;
 
     console.log("Initializing socket connection");
-    const socketInstance = io("http://localhost:3001", {
+    const socketInstance = io("https://tbk.solar-ict.com", {
       auth: { token },
       reconnection: true,
       reconnectionAttempts: 5,
@@ -599,7 +599,7 @@ export default function ChatInterface() {
   // Utility functions
   const fetchUsers = async () => {
     try {
-      const response = await fetch("http://localhost:3001/users", {
+      const response = await fetch("https://tbk.solar-ict.com/users", {
         headers: {
           Authorization: `Bearer ${token}`,
         },
