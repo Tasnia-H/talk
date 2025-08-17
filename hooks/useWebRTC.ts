@@ -29,7 +29,7 @@ export function useWebRTC({ socket, callId, isInitiator }: UseWebRTCProps) {
     ],
   };
 
-  // Initialize peer connection
+  // Initialize peer connection - IDENTICAL TO VIDEO CALLS
   const initializePeerConnection = useCallback(() => {
     if (peerConnection.current) {
       console.log("Peer connection already exists");
@@ -52,7 +52,7 @@ export function useWebRTC({ socket, callId, isInitiator }: UseWebRTCProps) {
         }
       };
 
-      // Handle remote stream
+      // Handle remote stream - IDENTICAL TO VIDEO CALLS
       peerConnection.current.ontrack = (event) => {
         console.log("Remote track received:", event.streams[0]);
         const [stream] = event.streams;
@@ -97,7 +97,7 @@ export function useWebRTC({ socket, callId, isInitiator }: UseWebRTCProps) {
     currentCallIdRef.current = callId;
   }, [callId]);
 
-  // Get user media
+  // Get user media - IDENTICAL TO VIDEO CALLS
   const getUserMedia = useCallback(async (video: boolean = false) => {
     try {
       console.log("Getting user media, video:", video);
@@ -136,10 +136,10 @@ export function useWebRTC({ socket, callId, isInitiator }: UseWebRTCProps) {
     }
   }, []);
 
-  // Get display media (screen share)
-  const getDisplayMedia = useCallback(async () => {
+  // Get screen share media - IDENTICAL LOGIC TO getUserMedia
+  const getScreenMedia = useCallback(async () => {
     try {
-      console.log("Getting display media for screen sharing");
+      console.log("Getting screen media");
       
       // Stop existing stream if any
       if (localStreamRef.current) {
@@ -150,34 +150,29 @@ export function useWebRTC({ socket, callId, isInitiator }: UseWebRTCProps) {
       }
 
       const stream = await navigator.mediaDevices.getDisplayMedia({
-        video: {
-          width: { ideal: 1920 },
-          height: { ideal: 1080 },
-          frameRate: { ideal: 30 }
-        },
-        audio: false // Screen audio can be enabled separately if needed
+        video: true,
+        audio: false
       });
 
-      console.log("Got display media:", stream);
+      console.log("Got screen media:", stream);
       
-      // Listen for screen share end (when user clicks "Stop sharing" in browser)
-      stream.getVideoTracks()[0].addEventListener('ended', () => {
-        console.log("Screen share ended by user");
+      // Handle screen share ending
+      stream.getVideoTracks()[0].onended = () => {
+        console.log("Screen sharing ended by user");
         setIsScreenSharing(false);
-        // Optionally switch back to camera or end call
-      });
+      };
       
       localStreamRef.current = stream;
       setLocalStream(stream);
       setIsScreenSharing(true);
       return stream;
     } catch (error) {
-      console.error("Error accessing display media:", error);
+      console.error("Error accessing screen share:", error);
       throw error;
     }
   }, []);
 
-  // Add local stream to peer connection
+  // Add local stream to peer connection - IDENTICAL TO VIDEO CALLS
   const addLocalStream = useCallback((stream: MediaStream) => {
     if (!peerConnection.current) {
       console.error("Peer connection not initialized");
@@ -202,7 +197,7 @@ export function useWebRTC({ socket, callId, isInitiator }: UseWebRTCProps) {
     });
   }, []);
 
-  // Create and send offer
+  // Create and send offer - IDENTICAL TO VIDEO CALLS
   const createOffer = useCallback(async () => {
     if (!peerConnection.current || !socket || !currentCallIdRef.current) {
       console.error("Cannot create offer - missing dependencies", {
@@ -232,7 +227,7 @@ export function useWebRTC({ socket, callId, isInitiator }: UseWebRTCProps) {
     }
   }, [socket]);
 
-  // Handle incoming offer
+  // Handle incoming offer - IDENTICAL TO VIDEO CALLS
   const handleOffer = useCallback(async (offer: RTCSessionDescriptionInit) => {
     if (!peerConnection.current || !socket || !currentCallIdRef.current) {
       console.error("Peer connection not initialized for handling offer");
@@ -272,7 +267,7 @@ export function useWebRTC({ socket, callId, isInitiator }: UseWebRTCProps) {
     }
   }, [socket]);
 
-  // Handle incoming answer
+  // Handle incoming answer - IDENTICAL TO VIDEO CALLS
   const handleAnswer = useCallback(async (answer: RTCSessionDescriptionInit) => {
     if (!peerConnection.current) {
       console.error("Peer connection not initialized for handling answer");
@@ -302,7 +297,7 @@ export function useWebRTC({ socket, callId, isInitiator }: UseWebRTCProps) {
     }
   }, []);
 
-  // Handle incoming ICE candidate
+  // Handle incoming ICE candidate - IDENTICAL TO VIDEO CALLS
   const handleIceCandidate = useCallback(async (candidate: RTCIceCandidateInit) => {
     if (!peerConnection.current) {
       console.error("Peer connection not initialized for handling ICE candidate");
@@ -325,27 +320,74 @@ export function useWebRTC({ socket, callId, isInitiator }: UseWebRTCProps) {
     }
   }, []);
 
-  // Toggle video - properly disable/enable video without breaking connection
+  // Toggle screen sharing - EXACTLY like toggleVideo but for screen
+  const toggleScreenShare = useCallback(async (isScreenOff: boolean) => {
+    if (!localStreamRef.current) return;
+
+    if (isScreenOff) {
+      // Disable screen track but keep it in the stream (like video mute)
+      const videoTrack = localStreamRef.current.getVideoTracks()[0];
+      if (videoTrack) {
+        videoTrack.enabled = false;
+        setIsScreenSharing(false);
+        console.log("Screen sharing disabled (track kept)");
+      }
+    } else {
+      // Check if we have an existing screen track
+      const existingVideoTrack = localStreamRef.current.getVideoTracks()[0];
+      
+      if (existingVideoTrack && !existingVideoTrack.enabled) {
+        // Re-enable existing track
+        existingVideoTrack.enabled = true;
+        setIsScreenSharing(true);
+        console.log("Screen sharing re-enabled");
+      } else if (!existingVideoTrack) {
+        // No screen track exists, create a new one
+        try {
+          const screenStream = await getScreenMedia();
+          const newVideoTrack = screenStream.getVideoTracks()[0];
+          
+          if (newVideoTrack) {
+            localStreamRef.current.addTrack(newVideoTrack);
+            
+            // Update peer connection
+            if (peerConnection.current) {
+              peerConnection.current.addTrack(newVideoTrack, localStreamRef.current);
+            }
+            
+            // Update local stream state
+            setLocalStream(new MediaStream(localStreamRef.current.getTracks()));
+            setIsScreenSharing(true);
+            console.log("New screen track added");
+          }
+        } catch (error) {
+          console.error("Failed to get screen track:", error);
+          alert("Failed to access screen share. Please check permissions.");
+        }
+      }
+    }
+    
+    // Update the local stream to trigger re-render
+    setLocalStream(new MediaStream(localStreamRef.current.getTracks()));
+  }, [getScreenMedia]);
+
+  // Toggle video - IDENTICAL TO BEFORE
   const toggleVideo = useCallback(async (isVideoOff: boolean) => {
     if (!localStreamRef.current) return;
 
     if (isVideoOff) {
-      // Disable video track but keep it in the stream
       const videoTrack = localStreamRef.current.getVideoTracks()[0];
       if (videoTrack) {
         videoTrack.enabled = false;
         console.log("Video disabled (track kept)");
       }
     } else {
-      // Check if we have an existing video track
       const existingVideoTrack = localStreamRef.current.getVideoTracks()[0];
       
       if (existingVideoTrack && !existingVideoTrack.enabled) {
-        // Re-enable existing track
         existingVideoTrack.enabled = true;
         console.log("Video re-enabled");
       } else if (!existingVideoTrack) {
-        // No video track exists, create a new one
         try {
           const videoStream = await navigator.mediaDevices.getUserMedia({ 
             video: { 
@@ -359,14 +401,11 @@ export function useWebRTC({ socket, callId, isInitiator }: UseWebRTCProps) {
           if (newVideoTrack) {
             localStreamRef.current.addTrack(newVideoTrack);
             
-            // Update peer connection
             if (peerConnection.current) {
               peerConnection.current.addTrack(newVideoTrack, localStreamRef.current);
             }
             
-            // Update local stream state
             setLocalStream(new MediaStream(localStreamRef.current.getTracks()));
-            setIsScreenSharing(false);
             console.log("New video track added");
           }
         } catch (error) {
@@ -376,31 +415,26 @@ export function useWebRTC({ socket, callId, isInitiator }: UseWebRTCProps) {
       }
     }
     
-    // Update the local stream to trigger re-render
     setLocalStream(new MediaStream(localStreamRef.current.getTracks()));
   }, []);
 
-  // Toggle mute - properly disable/enable audio without breaking connection
+  // Toggle mute - IDENTICAL TO BEFORE
   const toggleMute = useCallback(async (isMuted: boolean) => {
     if (!localStreamRef.current) return;
 
     if (isMuted) {
-      // Disable audio track but keep it in the stream
       const audioTrack = localStreamRef.current.getAudioTracks()[0];
       if (audioTrack) {
         audioTrack.enabled = false;
         console.log("Audio disabled (track kept)");
       }
     } else {
-      // Check if we have an existing audio track
       const existingAudioTrack = localStreamRef.current.getAudioTracks()[0];
       
       if (existingAudioTrack && !existingAudioTrack.enabled) {
-        // Re-enable existing track
         existingAudioTrack.enabled = true;
         console.log("Audio re-enabled");
       } else if (!existingAudioTrack) {
-        // No audio track exists, create a new one
         try {
           const audioStream = await navigator.mediaDevices.getUserMedia({ 
             audio: {
@@ -414,12 +448,10 @@ export function useWebRTC({ socket, callId, isInitiator }: UseWebRTCProps) {
           if (newAudioTrack) {
             localStreamRef.current.addTrack(newAudioTrack);
             
-            // Update peer connection
             if (peerConnection.current) {
               peerConnection.current.addTrack(newAudioTrack, localStreamRef.current);
             }
             
-            // Update local stream state
             setLocalStream(new MediaStream(localStreamRef.current.getTracks()));
             console.log("New audio track added");
           }
@@ -430,137 +462,10 @@ export function useWebRTC({ socket, callId, isInitiator }: UseWebRTCProps) {
       }
     }
     
-    // Update the local stream to trigger re-render
     setLocalStream(new MediaStream(localStreamRef.current.getTracks()));
   }, []);
 
-  // Toggle screen share
-  const toggleScreenShare = useCallback(async (isScreenShareOff: boolean) => {
-    if (!localStreamRef.current) return;
-
-    if (isScreenShareOff) {
-      // Stop screen sharing - create a black canvas instead of removing track
-      try {
-        // Create a black canvas
-        const canvas = document.createElement('canvas');
-        canvas.width = 640;
-        canvas.height = 480;
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-          ctx.fillStyle = '#000000';
-          ctx.fillRect(0, 0, canvas.width, canvas.height);
-        }
-        
-        // Get a stream from the black canvas
-        const blackStream = canvas.captureStream(1); // 1 FPS is enough for a static black frame
-        const blackVideoTrack = blackStream.getVideoTracks()[0];
-        
-        if (blackVideoTrack) {
-          // Replace screen share track with black canvas track
-          const oldVideoTrack = localStreamRef.current.getVideoTracks()[0];
-          if (oldVideoTrack) {
-            oldVideoTrack.stop();
-            localStreamRef.current.removeTrack(oldVideoTrack);
-          }
-          
-          localStreamRef.current.addTrack(blackVideoTrack);
-          
-          // Update peer connection
-          if (peerConnection.current) {
-            const sender = peerConnection.current.getSenders().find(s => 
-              s.track && s.track.kind === 'video'
-            );
-            if (sender) {
-              await sender.replaceTrack(blackVideoTrack);
-            } else {
-              peerConnection.current.addTrack(blackVideoTrack, localStreamRef.current);
-            }
-          }
-          
-          setIsScreenSharing(false);
-          setLocalStream(new MediaStream(localStreamRef.current.getTracks()));
-          console.log("Screen sharing stopped, showing black screen");
-        }
-      } catch (error) {
-        console.error("Failed to create black screen:", error);
-        // Fallback: just remove the track
-        const videoTrack = localStreamRef.current.getVideoTracks()[0];
-        if (videoTrack) {
-          videoTrack.stop();
-          localStreamRef.current.removeTrack(videoTrack);
-          
-          if (peerConnection.current) {
-            const sender = peerConnection.current.getSenders().find(s => 
-              s.track && s.track.kind === 'video'
-            );
-            if (sender) {
-              await sender.replaceTrack(null);
-            }
-          }
-          
-          setIsScreenSharing(false);
-          setLocalStream(new MediaStream(localStreamRef.current.getTracks()));
-        }
-      }
-    } else {
-      // Start screen sharing
-      try {
-        const displayStream = await navigator.mediaDevices.getDisplayMedia({
-          video: {
-            width: { ideal: 1920 },
-            height: { ideal: 1080 },
-            frameRate: { ideal: 30 }
-          },
-          audio: false
-        });
-        
-        const newVideoTrack = displayStream.getVideoTracks()[0];
-        
-        if (newVideoTrack) {
-          // Listen for screen share end
-          newVideoTrack.addEventListener('ended', () => {
-            console.log("Screen share ended by user");
-            // When user stops screen sharing via browser, show black screen
-            toggleScreenShare(true);
-          });
-
-          // Replace existing video track with screen share track
-          const oldVideoTrack = localStreamRef.current.getVideoTracks()[0];
-          if (oldVideoTrack) {
-            oldVideoTrack.stop();
-            localStreamRef.current.removeTrack(oldVideoTrack);
-          }
-          
-          localStreamRef.current.addTrack(newVideoTrack);
-          
-          // Update peer connection
-          if (peerConnection.current) {
-            const sender = peerConnection.current.getSenders().find(s => 
-              s.track && s.track.kind === 'video'
-            );
-            if (sender) {
-              await sender.replaceTrack(newVideoTrack);
-            } else {
-              peerConnection.current.addTrack(newVideoTrack, localStreamRef.current);
-            }
-          }
-          
-          setIsScreenSharing(true);
-          setLocalStream(new MediaStream(localStreamRef.current.getTracks()));
-          console.log("Started screen sharing");
-        }
-      } catch (error) {
-        console.error("Failed to start screen sharing:", error);
-        if (error instanceof Error && error.message.includes('Permission denied')) {
-          alert("Screen sharing permission denied. Please allow screen sharing and try again.");
-        } else {
-          alert("Failed to start screen sharing. Please try again.");
-        }
-      }
-    }
-  }, []);
-
-  // Force release media for testing (completely stops tracks)
+  // Force release media for testing
   const forceReleaseVideo = useCallback(() => {
     if (!localStreamRef.current) return;
     
@@ -569,7 +474,6 @@ export function useWebRTC({ socket, callId, isInitiator }: UseWebRTCProps) {
       videoTrack.stop();
       localStreamRef.current.removeTrack(videoTrack);
       
-      // Update peer connection
       if (peerConnection.current) {
         const sender = peerConnection.current.getSenders().find(s => 
           s.track && s.track.kind === 'video'
@@ -579,18 +483,15 @@ export function useWebRTC({ socket, callId, isInitiator }: UseWebRTCProps) {
         }
       }
       
-      // Update local stream state
       setLocalStream(new MediaStream(localStreamRef.current.getTracks()));
-      setIsScreenSharing(false);
       console.log("Video track completely released");
     }
   }, []);
 
-  // Cleanup function
+  // Cleanup function - IDENTICAL TO VIDEO CALLS
   const cleanup = useCallback(() => {
     console.log("Cleaning up WebRTC resources");
     
-    // Stop local stream
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach((track) => {
         console.log("Stopping track:", track.kind);
@@ -600,7 +501,6 @@ export function useWebRTC({ socket, callId, isInitiator }: UseWebRTCProps) {
       setLocalStream(null);
     }
 
-    // Close peer connection
     if (peerConnection.current) {
       console.log("Closing peer connection");
       peerConnection.current.close();
@@ -614,7 +514,7 @@ export function useWebRTC({ socket, callId, isInitiator }: UseWebRTCProps) {
     currentCallIdRef.current = null;
   }, []);
 
-  // Setup WebRTC event listeners
+  // Setup WebRTC event listeners - IDENTICAL TO VIDEO CALLS
   useEffect(() => {
     if (!socket || !callId) {
       console.log("No socket or callId, skipping WebRTC listeners setup");
@@ -669,7 +569,7 @@ export function useWebRTC({ socket, callId, isInitiator }: UseWebRTCProps) {
     isConnected,
     isScreenSharing,
     getUserMedia,
-    getDisplayMedia,
+    getScreenMedia,
     addLocalStream,
     createOffer,
     initializePeerConnection,
